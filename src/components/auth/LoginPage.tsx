@@ -2,6 +2,10 @@ import { useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth, getRoleDashboardPath } from '../../store/authStore';
 import { supabase } from '../../lib/supabase';
+import { sanitizeInput } from '../../core/security/sanitizer';
+import { isValidEmail } from '../../core/security/validator';
+import { checkRateLimit } from '../../core/security/rateLimiter';
+import { logger } from '../../core/security/logger';
 
 export default function LoginPage() {
     const navigate = useNavigate();
@@ -19,15 +23,31 @@ export default function LoginPage() {
         e.preventDefault();
         setError(null);
         setMessage(null);
-        setSubmitting(true);
 
-        if (!email || !password) {
+        const sanitizedEmail = sanitizeInput(email).toLowerCase().trim();
+        const sanitizedPassword = sanitizeInput(password);
+
+        if (!sanitizedEmail || !sanitizedPassword) {
             setError('Please enter both email and password.');
             setSubmitting(false);
             return;
         }
 
-        const { error: authError } = await login(email, password);
+        if (!isValidEmail(sanitizedEmail)) {
+            setError('Please enter a valid email address.');
+            return;
+        }
+
+        const ipKey = `login:${sanitizedEmail}`;
+        if (!checkRateLimit(ipKey, 5, 60_000)) {
+            logger.warn('Login rate limit reached', { email: sanitizedEmail });
+            setError('Too many login attempts. Please try again in a minute.');
+            return;
+        }
+
+        setSubmitting(true);
+
+        const { error: authError } = await login(sanitizedEmail, sanitizedPassword);
 
         if (authError) {
             switch (authError.message) {
@@ -38,7 +58,7 @@ export default function LoginPage() {
                     setError('Please verify your email address before logging in.');
                     break;
                 default:
-                    setError(authError.message);
+                    setError('Authentication failed. Please try again.');
             }
             setSubmitting(false);
             return;
@@ -67,19 +87,33 @@ export default function LoginPage() {
         e.preventDefault();
         setError(null);
         setMessage(null);
-        setResetLoading(true);
 
-        if (!email) {
+        const sanitizedEmail = sanitizeInput(email).toLowerCase().trim();
+
+        if (!sanitizedEmail) {
             setError('Please enter your email address.');
-            setResetLoading(false);
             return;
         }
 
-        const { error: resetError } = await resetPassword(email);
+        if (!isValidEmail(sanitizedEmail)) {
+            setError('Please enter a valid email address.');
+            return;
+        }
+
+        const rlKey = `reset:${sanitizedEmail}`;
+        if (!checkRateLimit(rlKey, 3, 300_000)) {
+            setError('Too many reset requests. Please try again in 5 minutes.');
+            return;
+        }
+
+        setResetLoading(true);
+
+        const { error: resetError } = await resetPassword(sanitizedEmail);
         setResetLoading(false);
 
         if (resetError) {
-            setError(resetError.message);
+            setError('Unable to send reset link. Please try again later.');
+            logger.warn('Password reset email failed', { code: resetError.code });
         } else {
             setMessage('Password reset link sent! Check your email inbox.');
             setShowForgotPassword(false);
@@ -177,6 +211,7 @@ export default function LoginPage() {
                                 onChange={(e) => setEmail(e.target.value)}
                                 placeholder="you@school.edu"
                                 autoComplete="email"
+                                maxLength={254}
                                 required
                             />
                         </div>
@@ -189,6 +224,7 @@ export default function LoginPage() {
                                 onChange={(e) => setPassword(e.target.value)}
                                 placeholder="••••••••"
                                 autoComplete="current-password"
+                                maxLength={128}
                                 required
                             />
                         </div>

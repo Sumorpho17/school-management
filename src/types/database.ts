@@ -12,6 +12,7 @@ export type Database = {
       students: {
         Row: {
           id: string;
+          school_id: string;
           first_name: string;
           last_name: string;
           date_of_birth: string;
@@ -28,6 +29,7 @@ export type Database = {
         };
         Insert: {
           id?: string;
+          school_id: string;
           first_name: string;
           last_name: string;
           date_of_birth: string;
@@ -44,6 +46,7 @@ export type Database = {
         };
         Update: {
           id?: string;
+          school_id?: string;
           first_name?: string;
           last_name?: string;
           date_of_birth?: string;
@@ -72,6 +75,7 @@ export type Database = {
       teachers: {
         Row: {
           id: string;
+          school_id: string;
           first_name: string;
           last_name: string;
           email: string;
@@ -91,6 +95,7 @@ export type Database = {
         };
         Insert: {
           id?: string;
+          school_id: string;
           first_name: string;
           last_name: string;
           email: string;
@@ -110,6 +115,7 @@ export type Database = {
         };
         Update: {
           id?: string;
+          school_id?: string;
           first_name?: string;
           last_name?: string;
           email?: string;
@@ -141,6 +147,7 @@ export type Database = {
       classes: {
         Row: {
           id: string;
+          school_id: string;
           name: string;
           grade_level: string;
           section: string | null;
@@ -153,6 +160,7 @@ export type Database = {
         };
         Insert: {
           id?: string;
+          school_id: string;
           name: string;
           grade_level: string;
           section?: string | null;
@@ -165,6 +173,7 @@ export type Database = {
         };
         Update: {
           id?: string;
+          school_id?: string;
           name?: string;
           grade_level?: string;
           section?: string | null;
@@ -189,6 +198,7 @@ export type Database = {
       subjects: {
         Row: {
           id: string;
+          school_id: string;
           name: string;
           code: string;
           description: string | null;
@@ -200,6 +210,7 @@ export type Database = {
         };
         Insert: {
           id?: string;
+          school_id: string;
           name: string;
           code: string;
           description?: string | null;
@@ -211,6 +222,7 @@ export type Database = {
         };
         Update: {
           id?: string;
+          school_id?: string;
           name?: string;
           code?: string;
           description?: string | null;

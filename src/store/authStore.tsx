@@ -6,9 +6,11 @@ import {
     useCallback,
     type ReactNode,
 } from 'react';
-import type { User, AuthError } from '@supabase/supabase-js';
+import { AuthError, type User } from '@supabase/supabase-js';
 import { supabase } from '../lib/supabase';
 import type { Tables } from '../types/database';
+import { logger } from '../core/security/logger';
+import { isValidEmail } from '../core/security/validator';
 
 type Profile = Tables<'profiles'>;
 type UserRole = Profile['role'];
@@ -53,7 +55,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             .single();
 
         if (error) {
-            console.error('Error fetching profile:', error.message);
+            logger.error('Failed to fetch profile', { userId: user.id, code: error.code });
             return null;
         }
 
@@ -109,6 +111,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         email: string,
         password: string
     ): Promise<{ error: AuthError | null }> => {
+        if (!isValidEmail(email)) {
+            const err = new Error('Invalid email format') as AuthError;
+            return { error: err as unknown as AuthError };
+        }
+
         setState((prev) => ({ ...prev, isLoading: true }));
 
         const { error } = await supabase.auth.signInWithPassword({
@@ -117,11 +124,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         });
 
         if (error) {
+            logger.warn('Login failed', { code: error.code });
             setState((prev) => ({ ...prev, isLoading: false }));
             return { error };
         }
 
-        // Profile will be fetched by onAuthStateChange listener
+        logger.info('Login successful');
         return { error: null };
     };
 
@@ -132,9 +140,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const resetPassword = async (
         email: string
     ): Promise<{ error: AuthError | null }> => {
+        if (!isValidEmail(email)) {
+            const err = new Error('Invalid email format') as AuthError;
+            return { error: err as unknown as AuthError };
+        }
+
+        const redirectUrl = `${window.location.protocol}//${window.location.host}/reset-password`;
         const { error } = await supabase.auth.resetPasswordForEmail(email, {
-            redirectTo: `${window.location.origin}/reset-password`,
+            redirectTo: redirectUrl,
         });
+
+        if (error) {
+            logger.warn('Password reset failed', { code: error.code });
+        } else {
+            logger.info('Password reset email sent');
+        }
+
         return { error };
     };
 

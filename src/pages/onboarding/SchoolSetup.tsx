@@ -2,6 +2,9 @@ import { useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../store/authStore';
 import { supabase } from '../../lib/supabase';
+import { sanitizeInput, sanitizeFilename } from '../../core/security/sanitizer';
+import { isValidEmail, isValidPhone, isValidDate, isValidImageFile } from '../../core/security/validator';
+import { logger } from '../../core/security/logger';
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -63,10 +66,19 @@ export default function SchoolSetup() {
     /* ---- helpers ---- */
 
     const updateSchool = (field: keyof SchoolDetails, value: string) => {
-        setSchool((prev) => ({ ...prev, [field]: value }));
+        const sanitized = sanitizeInput(value);
+        setSchool((prev) => ({ ...prev, [field]: sanitized }));
     };
 
     const handleLogoChange = (file: File | null) => {
+        if (file) {
+            const validation = isValidImageFile(file);
+            if (!validation.valid) {
+                setError(validation.reason ?? 'Invalid file.');
+                return;
+            }
+            setError(null);
+        }
         setSchool((prev) => ({ ...prev, logoFile: file }));
         if (file) {
             const reader = new FileReader();
@@ -96,6 +108,18 @@ export default function SchoolSetup() {
             setError('School name is required.');
             return false;
         }
+        if (school.name.trim().length > 200) {
+            setError('School name must be under 200 characters.');
+            return false;
+        }
+        if (school.email && !isValidEmail(school.email.trim())) {
+            setError('Please enter a valid school email address.');
+            return false;
+        }
+        if (school.phone && !isValidPhone(school.phone.trim())) {
+            setError('Please enter a valid phone number.');
+            return false;
+        }
         setError(null);
         return true;
     };
@@ -107,10 +131,24 @@ export default function SchoolSetup() {
                 setError(`Please fill in all fields for ${t.name || `Term ${i + 1}`}.`);
                 return false;
             }
+            if (!isValidDate(t.startDate) || !isValidDate(t.endDate)) {
+                setError(`${t.name}: invalid date format.`);
+                return false;
+            }
             if (new Date(t.startDate) >= new Date(t.endDate)) {
                 setError(`${t.name}: start date must be before end date.`);
                 return false;
             }
+        }
+        if (calendar.terms[0].endDate && calendar.terms[1].startDate &&
+            new Date(calendar.terms[0].endDate) >= new Date(calendar.terms[1].startDate)) {
+            setError('Term 2 start must be after Term 1 end.');
+            return false;
+        }
+        if (calendar.terms[1].endDate && calendar.terms[2].startDate &&
+            new Date(calendar.terms[1].endDate) >= new Date(calendar.terms[2].startDate)) {
+            setError('Term 3 start must be after Term 2 end.');
+            return false;
         }
         setError(null);
         return true;
@@ -138,14 +176,18 @@ export default function SchoolSetup() {
             // 1. Upload logo if provided
             let logoUrl: string | null = null;
             if (school.logoFile) {
-                const ext = school.logoFile.name.split('.').pop();
+                const safeName = sanitizeFilename(school.logoFile.name);
+                const ext = safeName.split('.').pop() ?? 'png';
                 const path = `logos/${user.id}-${Date.now()}.${ext}`;
 
                 const { error: uploadErr } = await supabase.storage
                     .from('school-assets')
                     .upload(path, school.logoFile, { upsert: true });
 
-                if (uploadErr) throw new Error(`Logo upload failed: ${uploadErr.message}`);
+                if (uploadErr) {
+                    logger.error('Logo upload failed');
+                    throw new Error('Logo upload failed. Please try again.');
+                }
 
                 const { data: urlData } = supabase.storage
                     .from('school-assets')
@@ -158,17 +200,18 @@ export default function SchoolSetup() {
             const { data: newSchool, error: schoolErr } = await supabase
                 .from('schools')
                 .insert({
-                    name: school.name.trim(),
-                    address: school.address.trim() || null,
-                    phone: school.phone.trim() || null,
-                    email: school.email.trim() || null,
+                    name: sanitizeInput(school.name).trim(),
+                    address: sanitizeInput(school.address).trim() || null,
+                    phone: sanitizeInput(school.phone).trim() || null,
+                    email: sanitizeInput(school.email).trim().toLowerCase() || null,
                     logo_url: logoUrl,
                 })
                 .select('id')
                 .single();
 
             if (schoolErr || !newSchool) {
-                throw new Error(schoolErr?.message ?? 'Failed to create school.');
+                logger.error('School creation failed', { code: schoolErr?.code });
+                throw new Error('Failed to create school. Please try again.');
             }
 
             const schoolId = newSchool.id;
@@ -176,7 +219,7 @@ export default function SchoolSetup() {
             // 3. Insert academic terms
             const termRows = calendar.terms.map((t, i) => ({
                 school_id: schoolId,
-                name: `${t.name} — ${calendar.academicYear}`,
+                name: `${sanitizeInput(t.name)} — ${calendar.academicYear}`,
                 start_date: t.startDate,
                 end_date: t.endDate,
                 is_current: i === calendar.currentTermIndex,
@@ -186,7 +229,10 @@ export default function SchoolSetup() {
                 .from('academic_terms')
                 .insert(termRows);
 
-            if (termsErr) throw new Error(`Failed to save terms: ${termsErr.message}`);
+            if (termsErr) {
+                logger.error('Terms creation failed', { code: termsErr.code });
+                throw new Error('Failed to save academic terms. Please try again.');
+            }
 
             // 4. Link admin profile → school
             const { error: profileErr } = await supabase
@@ -194,13 +240,17 @@ export default function SchoolSetup() {
                 .update({ school_id: schoolId })
                 .eq('id', user.id);
 
-            if (profileErr) throw new Error(`Failed to update profile: ${profileErr.message}`);
+            if (profileErr) {
+                logger.error('Profile update failed', { code: profileErr.code });
+                throw new Error('Failed to update profile. Please try again.');
+            }
 
             // 5. Refresh auth profile then redirect
             await getProfile();
             navigate('/admin/dashboard', { replace: true });
         } catch (err) {
             setError(err instanceof Error ? err.message : 'Something went wrong.');
+            logger.error('School setup failed', { step });
         } finally {
             setSubmitting(false);
         }
@@ -242,47 +292,51 @@ export default function SchoolSetup() {
 
             <div className="form-group">
                 <label htmlFor="school-name">School Name *</label>
-                <input
-                    id="school-name"
-                    type="text"
-                    value={school.name}
-                    onChange={(e) => updateSchool('name', e.target.value)}
-                    placeholder="e.g. Greenfield Academy"
-                    required
-                />
+                            <input
+                                id="school-name"
+                                type="text"
+                                value={school.name}
+                                onChange={(e) => updateSchool('name', e.target.value)}
+                                placeholder="e.g. Greenfield Academy"
+                                maxLength={200}
+                                required
+                            />
             </div>
 
             <div className="form-group">
                 <label htmlFor="school-address">Address</label>
-                <input
-                    id="school-address"
-                    type="text"
-                    value={school.address}
-                    onChange={(e) => updateSchool('address', e.target.value)}
-                    placeholder="e.g. 12 Unity Road, Ikeja, Lagos"
-                />
+                    <input
+                        id="school-address"
+                        type="text"
+                        value={school.address}
+                        onChange={(e) => updateSchool('address', e.target.value)}
+                        placeholder="e.g. 12 Unity Road, Ikeja, Lagos"
+                        maxLength={300}
+                    />
             </div>
 
             <div className="form-row">
                 <div className="form-group">
                     <label htmlFor="school-phone">Phone</label>
-                    <input
-                        id="school-phone"
-                        type="tel"
-                        value={school.phone}
-                        onChange={(e) => updateSchool('phone', e.target.value)}
-                        placeholder="+234 800 000 0000"
-                    />
+                        <input
+                            id="school-phone"
+                            type="tel"
+                            value={school.phone}
+                            onChange={(e) => updateSchool('phone', e.target.value)}
+                            placeholder="+234 800 000 0000"
+                            maxLength={20}
+                        />
                 </div>
                 <div className="form-group">
                     <label htmlFor="school-email">Email</label>
-                    <input
-                        id="school-email"
-                        type="email"
-                        value={school.email}
-                        onChange={(e) => updateSchool('email', e.target.value)}
-                        placeholder="info@school.edu"
-                    />
+                        <input
+                            id="school-email"
+                            type="email"
+                            value={school.email}
+                            onChange={(e) => updateSchool('email', e.target.value)}
+                            placeholder="info@school.edu"
+                            maxLength={254}
+                        />
                 </div>
             </div>
 
@@ -328,15 +382,16 @@ export default function SchoolSetup() {
 
             <div className="form-group">
                 <label htmlFor="academic-year">Academic Year</label>
-                <input
-                    id="academic-year"
-                    type="text"
-                    value={calendar.academicYear}
-                    onChange={(e) =>
-                        setCalendar((prev) => ({ ...prev, academicYear: e.target.value }))
-                    }
-                    placeholder="2024/2025"
-                />
+                    <input
+                        id="academic-year"
+                        type="text"
+                        value={calendar.academicYear}
+                        onChange={(e) =>
+                            setCalendar((prev) => ({ ...prev, academicYear: e.target.value }))
+                        }
+                        placeholder="2024/2025"
+                        maxLength={9}
+                    />
             </div>
 
             {calendar.terms.map((term, idx) => (
@@ -358,13 +413,14 @@ export default function SchoolSetup() {
 
                     <div className="form-group">
                         <label htmlFor={`term-name-${idx}`}>Term Name</label>
-                        <input
-                            id={`term-name-${idx}`}
-                            type="text"
-                            value={term.name}
-                            onChange={(e) => updateTerm(idx, 'name', e.target.value)}
-                            placeholder={`e.g. First Term`}
-                        />
+                            <input
+                                id={`term-name-${idx}`}
+                                type="text"
+                                value={term.name}
+                                onChange={(e) => updateTerm(idx, 'name', e.target.value)}
+                                placeholder={`e.g. First Term`}
+                                maxLength={100}
+                            />
                     </div>
 
                     <div className="form-row">
